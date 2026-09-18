@@ -8,7 +8,7 @@ export default async function handle(req: NextApiRequest, res: NextApiResponse) 
   // รองรับทั้ง POST และ PUT
   if (req.method === 'PUT' || req.method === 'POST') {
     try {
-      const { uId, takecare_id, distance, latitude, longitude, battery } = req.body;
+      const { uId, takecare_id, distance, latitude, longitude, battery, target_sample_id } = req.body;
 
       // ตรวจสอบพารามิเตอร์ (ปล่อยให้ 0 ผ่านได้)
       if (
@@ -17,6 +17,12 @@ export default async function handle(req: NextApiRequest, res: NextApiResponse) 
         longitude === undefined || battery === undefined
       ) {
         return res.status(400).json({ message: 'error', data: 'พารามิเตอร์ไม่ครบถ้วน' });
+      }
+      if (
+        target_sample_id !== undefined && target_sample_id !== null &&
+        (typeof target_sample_id !== 'string' || target_sample_id.trim().length === 0 || target_sample_id.length > 200)
+      ) {
+        return res.status(400).json({ message: 'error', data: 'target_sample_id ไม่ถูกต้อง' });
       }
 
       // ดึง Safezone
@@ -64,6 +70,7 @@ export default async function handle(req: NextApiRequest, res: NextApiResponse) 
         locat_timestamp: new Date(),
         locat_latitude: String(latitude),
         locat_longitude: String(longitude),
+        target_sample_id: target_sample_id ?? null,
         locat_status: calculatedStatus,
         locat_distance: Number(distance),
         locat_battery: Number(battery),

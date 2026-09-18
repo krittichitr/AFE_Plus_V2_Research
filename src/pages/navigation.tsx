@@ -6,6 +6,14 @@ import "mapbox-gl/dist/mapbox-gl.css";
 import Link from "next/link";
 import axios from "axios";
 import { useRouter } from "next/router";
+import ResearchLogPanel from "@/components/research/ResearchLogPanel";
+import { appendResearchProvenanceEvent } from "@/lib/research/provenanceEvents";
+
+type TargetSnapshot = {
+  targetSampleId: string | null;
+  lat: number;
+  lng: number;
+};
 
 const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "";
 mapboxgl.accessToken = MAPBOX_TOKEN;
@@ -91,17 +99,19 @@ export default function NavigationPage() {
   const userMarkerRef = useRef<mapboxgl.Marker | null>(null);
   const patientMarkerRef = useRef<mapboxgl.Marker | null>(null);
   const userPosRef = useRef<{ lat: number; lng: number } | null>(null);
-  const patientPosRef = useRef<{ lat: number; lng: number } | null>(null);
+  const patientPosRef = useRef<TargetSnapshot | null>(null);
+  const rawTargetSnapshotRef = useRef<TargetSnapshot | null>(null);
   const headingRef = useRef<number>(0);
   const smoothHeadingRef = useRef<number>(0);
   const speedRef = useRef<number>(0);
 
   const lastRouteFetchUserPosRef = useRef<{ lat: number; lng: number } | null>(null);
-  const lastRouteFetchPatientPosRef = useRef<{ lat: number; lng: number } | null>(null);
+  const lastRouteFetchPatientPosRef = useRef<TargetSnapshot | null>(null);
 
   const animFrameRef = useRef<number | null>(null);
   const panTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const isMountedRef = useRef(true);
+  const routeActivationSeqRef = useRef(0);
 
   // Smooth marker animation refs
   const smoothUserPosRef = useRef<{ lat: number; lng: number } | null>(null);
@@ -309,7 +319,7 @@ export default function NavigationPage() {
   // --- Fetch Route ---
   const fetchRoute = useCallback(async (
     start: { lat: number; lng: number },
-    end: { lat: number; lng: number },
+    end: TargetSnapshot,
     force = false
   ) => {
     if (!force && lastRouteFetchUserPosRef.current && lastRouteFetchPatientPosRef.current) {
@@ -326,11 +336,50 @@ export default function NavigationPage() {
       if (userMoved < 15 && patientMoved < 15) return;
     }
 
+    const routeUpdateId = crypto.randomUUID();
+    const routeProvenance = Object.freeze({
+      route_update_id: routeUpdateId,
+      target_sample_id: end.targetSampleId,
+      target_ref_lat: end.lat,
+      target_ref_lng: end.lng,
+    });
+    let routeUpdateEnded = false;
+    const endRouteUpdate = (result: {
+      success: boolean;
+      usable_route: boolean;
+      outcome: string;
+    }) => {
+      if (routeUpdateEnded) return;
+      routeUpdateEnded = true;
+      appendResearchProvenanceEvent({
+        event: "route_update_end",
+        ...routeProvenance,
+        ...result,
+      });
+    };
+
     try {
       const url = `https://api.mapbox.com/directions/v5/mapbox/driving/${start.lng},${start.lat};${end.lng},${end.lat}?steps=true&geometries=geojson&overview=full&language=th&access_token=${MAPBOX_TOKEN}`;
+      appendResearchProvenanceEvent({
+        event: "route_update_start",
+        ...routeProvenance,
+      });
+      appendResearchProvenanceEvent({
+        event: "mapbox_http_attempt",
+        route_update_id: routeUpdateId,
+        physical_request_id: crypto.randomUUID(),
+        phase: "route_update",
+      });
       const res = await fetch(url);
       const json = await res.json();
-      if (!json.routes?.length || !isMountedRef.current) return;
+      if (!json.routes?.length) {
+        endRouteUpdate({ success: false, usable_route: false, outcome: "no_usable_route" });
+        return;
+      }
+      if (!isMountedRef.current) {
+        endRouteUpdate({ success: false, usable_route: false, outcome: "unmounted" });
+        return;
+      }
 
       const route = json.routes[0];
       const leg = route.legs[0];
@@ -420,12 +469,25 @@ export default function NavigationPage() {
           properties: {},
           geometry: route.geometry,
         });
+        endRouteUpdate({ success: true, usable_route: true, outcome: "active" });
+        const routeActivationSeq = routeActivationSeqRef.current + 1;
+        routeActivationSeqRef.current = routeActivationSeq;
+        appendResearchProvenanceEvent({
+          event: "route_active",
+          system_version: "V2",
+          ...routeProvenance,
+          route_activation_seq: routeActivationSeq,
+        });
+      }
+      if (!routeUpdateEnded) {
+        endRouteUpdate({ success: false, usable_route: false, outcome: "route_source_unavailable" });
       }
 
       // Save positions so we don't fetch again unless moved > 15m
       lastRouteFetchUserPosRef.current = { ...start };
       lastRouteFetchPatientPosRef.current = { ...end };
     } catch (err) {
+      endRouteUpdate({ success: false, usable_route: false, outcome: "route_error" });
       console.error("Route error:", err);
     }
   }, []);
@@ -507,7 +569,22 @@ export default function NavigationPage() {
       const data = res.data.data;
       if (!data?.locat_latitude || !data?.locat_longitude || !isMountedRef.current) return;
 
-      const newPos = { lat: Number(data.locat_latitude), lng: Number(data.locat_longitude) };
+      const newPos: TargetSnapshot = {
+        targetSampleId:
+          typeof data.target_sample_id === "string" && data.target_sample_id.length > 0
+            ? data.target_sample_id
+            : null,
+        lat: Number(data.locat_latitude),
+        lng: Number(data.locat_longitude),
+      };
+      rawTargetSnapshotRef.current = newPos;
+      appendResearchProvenanceEvent({
+        event: "target_received",
+        system_version: "V2",
+        target_sample_id: newPos.targetSampleId,
+        target_ref_lat: newPos.lat,
+        target_ref_lng: newPos.lng,
+      });
 
       if (patientPosRef.current) {
         const dist = haversineDistance(
@@ -580,6 +657,7 @@ export default function NavigationPage() {
     <div className="relative w-full h-[100dvh] overflow-hidden bg-black select-none font-sans">
       {/* Map */}
       <div ref={mapContainer} className="absolute inset-0 w-full h-full" />
+      <ResearchLogPanel className="absolute left-3 top-[96px] z-30" />
 
       {/* ===== TOP BANNER ===== */}
       <div className="absolute top-0 left-0 right-0 z-20 px-3 pt-3">

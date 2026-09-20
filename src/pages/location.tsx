@@ -100,8 +100,8 @@ const Location = () => {
     const onGetLocation = useCallback(async (safezoneData: any, takecareData: any, userData: any, researchEntry = false) => {
         try {
             const locationUrl = researchEntry
-                ? `${process.env.WEB_DOMAIN}/api/location/getLocation?takecare_id=${takecareData.takecare_id}&users_id=${userData.users_id}`
-                : `${process.env.WEB_DOMAIN}/api/location/getLocation?takecare_id=${takecareData.takecare_id}&users_id=${userData.users_id}&safezone_id=${safezoneData.safezone_id}&location_id=${router.query.idlocation}`;
+                ? `/api/location/getLocation?takecare_id=${takecareData.takecare_id}&users_id=${userData.users_id}`
+                : `/api/location/getLocation?takecare_id=${takecareData.takecare_id}&users_id=${userData.users_id}&safezone_id=${safezoneData.safezone_id}&location_id=${router.query.idlocation}`;
             const resLocation = await axios.get(locationUrl);
             if (resLocation.data?.data) {
                 const data = resLocation.data?.data;
@@ -133,8 +133,8 @@ const Location = () => {
     const onGetSafezone = useCallback(async (idSafezone: string, takecareData: any, userData: any, researchEntry = false) => {
         try {
             const safezoneUrl = researchEntry
-                ? `${process.env.WEB_DOMAIN}/api/setting/getSafezone?takecare_id=${takecareData.takecare_id}&users_id=${userData.users_id}`
-                : `${process.env.WEB_DOMAIN}/api/setting/getSafezone?takecare_id=${takecareData.takecare_id}&users_id=${userData.users_id}&id=${idSafezone}`;
+                ? `/api/setting/getSafezone?takecare_id=${takecareData.takecare_id}&users_id=${userData.users_id}`
+                : `/api/setting/getSafezone?takecare_id=${takecareData.takecare_id}&users_id=${userData.users_id}&id=${idSafezone}`;
             const resSafezone = await axios.get(safezoneUrl);
             if (resSafezone.data?.data) {
                 const data = resSafezone.data?.data;
@@ -162,10 +162,10 @@ const Location = () => {
 
     const onGetUserData = useCallback(async (auToken: string) => {
         try {
-            const responseUser = await axios.get(`${process.env.WEB_DOMAIN}/api/user/getUser/${auToken}`);
+            const responseUser = await axios.get(`/api/user/getUser/${auToken}`);
             if (responseUser.data?.data) {
                 const encodedUsersId = encrypt(responseUser.data?.data.users_id.toString());
-                const responseTakecareperson = await axios.get(`${process.env.WEB_DOMAIN}/api/user/getUserTakecareperson/${encodedUsersId}`);
+                const responseTakecareperson = await axios.get(`/api/user/getUserTakecareperson/${encodedUsersId}`);
                 const data = responseTakecareperson.data?.data;
 
                 if (data) {
@@ -262,7 +262,7 @@ const Location = () => {
 
         const fetchLocation = async () => {
             try {
-                const url = `${process.env.WEB_DOMAIN}/api/location/getLocation?takecare_id=${dataUser.takecareData.takecare_id}&users_id=${dataUser.userData.users_id}`;
+                const url = `/api/location/getLocation?takecare_id=${dataUser.takecareData.takecare_id}&users_id=${dataUser.userData.users_id}`;
                 const resLocation = await axios.get(url);
 
                 if (resLocation.data?.data) {

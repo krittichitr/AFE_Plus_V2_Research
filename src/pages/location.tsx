@@ -39,9 +39,32 @@ interface DataUserState {
     takecareData: any | null
 }
 
+type ResearchTargetStatus = 'idle' | 'unavailable' | 'valid' | 'safezone-fallback' | 'malformed';
+
+const RESEARCH_LOCATION_ENTRY_ENABLED =
+    process.env.NEXT_PUBLIC_RESEARCH_LOCATION_ENTRY_ENABLED === 'true';
+
+const parsePositiveSafeIntegerQuery = (value: string | string[] | undefined): number | null => {
+    if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value)) return null;
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) ? parsed : null;
+};
+
+const hasUsableCoordinates = (lat: number, lng: number) =>
+    Number.isFinite(lat) && Number.isFinite(lng) && !(lat === 0 && lng === 0);
+
 const Location = () => {
     const router = useRouter();
     const { isLoaded } = useGoogleMaps();
+
+    const researchUsersId = parsePositiveSafeIntegerQuery(router.query.users_id);
+    const researchTakecareId = parsePositiveSafeIntegerQuery(router.query.takecare_id);
+    const isResearchEntryRequested =
+        RESEARCH_LOCATION_ENTRY_ENABLED && !router.query.auToken;
+    const isResearchEntry =
+        isResearchEntryRequested &&
+        researchUsersId !== null &&
+        researchTakecareId !== null;
 
     // --- State ---
     const [mapRef, setMapRef] = useState<google.maps.Map | null>(null);
@@ -52,6 +75,7 @@ const Location = () => {
     const [dataUser, setDataUser] = useState<DataUserState>({ isLogin: false, userData: null, takecareData: null });
     const [safezonePos, setSafezonePos] = useState({ lat: 0, lng: 0 }); // Was 'origin'
     const [patientPos, setPatientPos] = useState({ lat: 0, lng: 0 });   // Was 'destination'
+    const [researchTargetStatus, setResearchTargetStatus] = useState<ResearchTargetStatus>('idle');
     const [myPos, setMyPos] = useState<google.maps.LatLngLiteral | null>(null);
 
     // UI/Map State
@@ -73,32 +97,45 @@ const Location = () => {
 
     // --- Helpers ---
 
-    const onGetLocation = async (safezoneData: any, takecareData: any, userData: any) => {
+    const onGetLocation = useCallback(async (safezoneData: any, takecareData: any, userData: any, researchEntry = false) => {
         try {
-            const resLocation = await axios.get(`${process.env.WEB_DOMAIN}/api/location/getLocation?takecare_id=${takecareData.takecare_id}&users_id=${userData.users_id}&safezone_id=${safezoneData.safezone_id}&location_id=${router.query.idlocation}`);
+            const locationUrl = researchEntry
+                ? `${process.env.WEB_DOMAIN}/api/location/getLocation?takecare_id=${takecareData.takecare_id}&users_id=${userData.users_id}`
+                : `${process.env.WEB_DOMAIN}/api/location/getLocation?takecare_id=${takecareData.takecare_id}&users_id=${userData.users_id}&safezone_id=${safezoneData.safezone_id}&location_id=${router.query.idlocation}`;
+            const resLocation = await axios.get(locationUrl);
             if (resLocation.data?.data) {
                 const data = resLocation.data?.data;
+                const lat = Number(data.locat_latitude);
+                const lng = Number(data.locat_longitude);
                 setPatientPos({
-                    lat: Number(data.locat_latitude),
-                    lng: Number(data.locat_longitude),
+                    lat: researchEntry && !hasUsableCoordinates(lat, lng) ? 0 : lat,
+                    lng: researchEntry && !hasUsableCoordinates(lat, lng) ? 0 : lng,
                 });
+                if (researchEntry) {
+                    setResearchTargetStatus(hasUsableCoordinates(lat, lng) ? 'valid' : 'malformed');
+                }
             } else {
                 // Fallback to Safezone center if no location
                 setPatientPos({
                     lat: Number(safezoneData.safez_latitude),
                     lng: Number(safezoneData.safez_longitude),
                 });
+                if (researchEntry) setResearchTargetStatus('safezone-fallback');
             }
             setLoading(false);
         } catch (error) {
             console.error("Location error:", error);
+            if (researchEntry) setResearchTargetStatus('unavailable');
             setLoading(false);
         }
-    }
+    }, [router.query.idlocation]);
 
-    const onGetSafezone = async (idSafezone: string, takecareData: any, userData: any) => {
+    const onGetSafezone = useCallback(async (idSafezone: string, takecareData: any, userData: any, researchEntry = false) => {
         try {
-            const resSafezone = await axios.get(`${process.env.WEB_DOMAIN}/api/setting/getSafezone?takecare_id=${takecareData.takecare_id}&users_id=${userData.users_id}&id=${idSafezone}`);
+            const safezoneUrl = researchEntry
+                ? `${process.env.WEB_DOMAIN}/api/setting/getSafezone?takecare_id=${takecareData.takecare_id}&users_id=${userData.users_id}`
+                : `${process.env.WEB_DOMAIN}/api/setting/getSafezone?takecare_id=${takecareData.takecare_id}&users_id=${userData.users_id}&id=${idSafezone}`;
+            const resSafezone = await axios.get(safezoneUrl);
             if (resSafezone.data?.data) {
                 const data = resSafezone.data?.data;
                 setSafezonePos({
@@ -109,13 +146,13 @@ const Location = () => {
                 setRange2(data.safez_radiuslv2);
 
                 // Also get initial location to be sure
-                onGetLocation(data, takecareData, userData);
+                onGetLocation(data, takecareData, userData, researchEntry);
             }
         } catch (error) {
             console.error("Safezone error:", error);
             setLoading(false);
         }
-    }
+    }, [onGetLocation]);
 
     const alertModal = () => {
         setAlert({ show: true, message: 'ระบบไม่สามารถดึงข้อมูลของท่านได้ กรุณาลองใหม่อีกครั้ง' });
@@ -147,7 +184,7 @@ const Location = () => {
             console.error("Auth error:", error);
             alertModal();
         }
-    }, [router.query.idsafezone]); // Add dep
+    }, [router.query.idsafezone, onGetSafezone]); // Add dep
 
     // --- Effects ---
 
@@ -230,10 +267,17 @@ const Location = () => {
 
                 if (resLocation.data?.data) {
                     const data = resLocation.data.data;
+                    const lat = Number(data.locat_latitude);
+                    const lng = Number(data.locat_longitude);
                     setPatientPos({
-                        lat: Number(data.locat_latitude),
-                        lng: Number(data.locat_longitude),
+                        lat: isResearchEntry && !hasUsableCoordinates(lat, lng) ? 0 : lat,
+                        lng: isResearchEntry && !hasUsableCoordinates(lat, lng) ? 0 : lng,
                     });
+                    if (isResearchEntry) {
+                        setResearchTargetStatus(hasUsableCoordinates(lat, lng) ? 'valid' : 'malformed');
+                    }
+                } else if (isResearchEntry) {
+                    setResearchTargetStatus('unavailable');
                 }
             } catch (err) {
                 console.log("realtime location error", err);
@@ -274,7 +318,7 @@ const Location = () => {
 
         const interval = setInterval(fetchLocation, intervalDuration);
         return () => clearInterval(interval);
-    }, [dataUser, safezonePos, patientPos, range1]);
+    }, [dataUser, safezonePos, patientPos, range1, isResearchEntry]);
 
     // 5. Auth & Initial Data Load
     useEffect(() => {
@@ -283,11 +327,33 @@ const Location = () => {
         const auToken = router.query.auToken;
         if (auToken && isLoaded) {
             onGetUserData(auToken as string);
+        } else if (!auToken && isResearchEntry && isLoaded) {
+            const userData = { users_id: researchUsersId };
+            const takecareData = { takecare_id: researchTakecareId };
+            setResearchTargetStatus('unavailable');
+            setDataUser({ isLogin: true, userData, takecareData });
+            onGetSafezone('', takecareData, userData, true);
+        } else if (!auToken && isResearchEntryRequested) {
+            setResearchTargetStatus('unavailable');
+            setDataUser({ isLogin: false, userData: null, takecareData: null });
+            setPatientPos({ lat: 0, lng: 0 });
+            setLoading(false);
+            setAlert({ show: true, message: "ไม่พบข้อมูลการเข้าสู่ระบบ (auToken Missing)" });
         } else if (isLoaded && !auToken) {
             setLoading(false);
             setAlert({ show: true, message: "ไม่พบข้อมูลการเข้าสู่ระบบ (auToken Missing)" });
         }
-    }, [router.query.auToken, isLoaded, router.isReady, onGetUserData]);
+    }, [
+        router.query.auToken,
+        isLoaded,
+        router.isReady,
+        isResearchEntryRequested,
+        isResearchEntry,
+        researchUsersId,
+        researchTakecareId,
+        onGetUserData,
+        onGetSafezone,
+    ]);
 
     const handleEmergencyNav = () => {
         const url = `https://www.google.com/maps/dir/?api=1&destination=${patientPos.lat},${patientPos.lng}`;
@@ -308,6 +374,19 @@ const Location = () => {
         if (patientPos.lat !== 0) return patientPos;
         return safezonePos;
     }, [myPos, patientPos, safezonePos]);
+
+    const hasResolvedResearchIdentity =
+        researchUsersId !== null &&
+        researchTakecareId !== null &&
+        dataUser.userData?.users_id === researchUsersId &&
+        dataUser.takecareData?.takecare_id === researchTakecareId;
+    const isResearchStartDisabled =
+        isResearchEntryRequested &&
+        (!isResearchEntry || !hasResolvedResearchIdentity || researchTargetStatus !== 'valid');
+    const shouldDisplayTarget =
+        isResearchEntryRequested
+            ? researchTargetStatus === 'valid' && hasUsableCoordinates(patientPos.lat, patientPos.lng)
+            : patientPos.lat !== 0;
 
 
     if (!isLoaded) {
@@ -348,7 +427,7 @@ const Location = () => {
                     )}
 
                     {/* 2. Patient Location (Pin + Shadow) */}
-                    {patientPos.lat !== 0 && (
+                    {shouldDisplayTarget && (
                         <>
                             <MarkerF position={patientPos} icon={PATIENT_ICON_BG as any} zIndex={1} />
                             <MarkerF
@@ -424,9 +503,16 @@ const Location = () => {
                             {/* 1. In-App Navigation (Demo Style) */}
                             <Link
                                 href={`/navigation?idlocation=${router.query.idlocation || ''}&users_id=${dataUser.userData?.users_id || ''}&takecare_id=${dataUser.takecareData?.takecare_id || ''}&auToken=${router.query.auToken || ''}`}
-                                className="block w-full text-decoration-none"
+                                aria-disabled={isResearchStartDisabled}
+                                onClick={(event) => {
+                                    if (isResearchStartDisabled) event.preventDefault();
+                                }}
+                                className={`block w-full text-decoration-none ${isResearchStartDisabled ? 'opacity-50 cursor-not-allowed' : ''}`}
                             >
-                                <button className="w-full bg-[#0F5338] hover:bg-[#0A3D28] text-white py-4 px-6 rounded-2xl shadow-lg active:scale-95 transition-all flex items-center justify-between group border-0">
+                                <button
+                                    disabled={isResearchStartDisabled}
+                                    className="w-full bg-[#0F5338] hover:bg-[#0A3D28] text-white py-4 px-6 rounded-2xl shadow-lg active:scale-95 transition-all flex items-center justify-between group border-0"
+                                >
                                     <div className="flex items-center gap-4">
                                         <div className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center">
                                             <svg className="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M5.05 4.05a7 7 0 119.9 9.9L10 18.9l-4.95-4.95a7 7 0 010-9.9zM10 11a2 2 0 100-4 2 2 0 000 4z" clipRule="evenodd" /></svg>

@@ -9,7 +9,7 @@ import {
   subscribeResearchLogger,
 } from '@/lib/research/provenanceEvents';
 
-export default function ResearchLogPanel({ className = '' }: { className?: string }) {
+export default function ResearchLogPanel({ className = '', onBeforeStop }: { className?: string; onBeforeStop?: () => void }) {
   const logger = useSyncExternalStore(
     subscribeResearchLogger,
     getResearchLoggerSnapshot,
@@ -44,10 +44,11 @@ export default function ResearchLogPanel({ className = '' }: { className?: strin
         <dt>Events</dt><dd>{logger.eventCount}</dd>
         <dt>Dropped</dt><dd>{logger.droppedEvents}</dd>
         <dt>Clock Sync</dt><dd className="font-semibold">{logger.clockStatus.replace('_', ' ')}</dd>
+        <dt>M2</dt><dd className="font-semibold">{logger.m2Incomplete || logger.droppedEvents > 0 ? 'INCOMPLETE' : 'NO KNOWN LOSS'}</dd>
       </dl>
       <div className="grid grid-cols-2 gap-1.5">
         <button type="button" disabled={logger.status === 'RECORDING'} onClick={() => startResearchRun(runIdInput)} className="rounded bg-emerald-700 px-2 py-1.5 font-semibold text-white disabled:opacity-40">START LOG</button>
-        <button type="button" disabled={logger.status !== 'RECORDING'} onClick={stopResearchRun} className="rounded bg-amber-600 px-2 py-1.5 font-semibold text-white disabled:opacity-40">STOP LOG</button>
+        <button type="button" disabled={logger.status !== 'RECORDING'} onClick={() => { onBeforeStop?.(); stopResearchRun(); }} className="rounded bg-amber-600 px-2 py-1.5 font-semibold text-white disabled:opacity-40">STOP LOG</button>
         <button type="button" disabled={!logger.hasData} onClick={exportResearchLog} className="rounded bg-blue-700 px-2 py-1.5 font-semibold text-white disabled:opacity-40">EXPORT LOG</button>
         <button type="button" disabled={logger.status === 'RECORDING'} onClick={() => { clearResearchRun(); setRunIdInput(''); }} className="rounded bg-slate-600 px-2 py-1.5 font-semibold text-white disabled:opacity-40">NEW/CLEAR RUN</button>
       </div>

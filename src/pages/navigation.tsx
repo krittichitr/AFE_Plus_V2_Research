@@ -7,7 +7,8 @@ import Link from "next/link";
 import axios from "axios";
 import { useRouter } from "next/router";
 import ResearchLogPanel from "@/components/research/ResearchLogPanel";
-import { appendResearchProvenanceEvent } from "@/lib/research/provenanceEvents";
+import { appendResearchProvenanceEvent, appendResearchProvenanceEventAt, getRecordingResearchRunId } from "@/lib/research/provenanceEvents";
+import { m2ResearchFetchBlocked, startV2M2Attempt, finishV2M2Attempt } from "@/lib/research/m2Instrumentation";
 
 type TargetSnapshot = {
   targetSampleId: string | null;
@@ -112,6 +113,12 @@ export default function NavigationPage() {
   const panTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const isMountedRef = useRef(true);
   const routeActivationSeqRef = useRef(0);
+  const navigationSessionIdRef = useRef<string | null>(null);
+  const pendingM1Ref = useRef(new Map<string, (reason: string) => void>());
+
+  const closePendingM1 = useCallback((reason: string) => {
+    pendingM1Ref.current.forEach((close) => close(reason));
+  }, []);
 
   // Smooth marker animation refs
   const smoothUserPosRef = useRef<{ lat: number; lng: number } | null>(null);
@@ -119,8 +126,11 @@ export default function NavigationPage() {
 
   useEffect(() => {
     isMountedRef.current = true;
-    return () => { isMountedRef.current = false; };
-  }, []);
+    return () => {
+      isMountedRef.current = false;
+      closePendingM1('unmounted');
+    };
+  }, [closePendingM1]);
 
   useEffect(() => {
     isMutedRef.current = isMuted;
@@ -180,7 +190,7 @@ export default function NavigationPage() {
       }
       // re-apply route if we have one
       if (lastRouteFetchUserPosRef.current && lastRouteFetchPatientPosRef.current) {
-        fetchRoute(lastRouteFetchUserPosRef.current, lastRouteFetchPatientPosRef.current, true);
+        fetchRoute(lastRouteFetchUserPosRef.current, lastRouteFetchPatientPosRef.current, true, 'style_reload');
       }
     };
 
@@ -320,8 +330,12 @@ export default function NavigationPage() {
   const fetchRoute = useCallback(async (
     start: { lat: number; lng: number },
     end: TargetSnapshot,
-    force = false
+    force = false,
+    reason?: 'style_reload',
   ) => {
+    // Explicit measurement mode: begin the run before any Directions dispatch.
+    // Ordinary navigation and all existing movement/style rules are unchanged.
+    if (typeof window !== 'undefined' && m2ResearchFetchBlocked(window.location.search, getRecordingResearchRunId())) return;
     if (!force && lastRouteFetchUserPosRef.current && lastRouteFetchPatientPosRef.current) {
       const userMoved = haversineDistance(
         lastRouteFetchUserPosRef.current.lat, lastRouteFetchUserPosRef.current.lng,
@@ -337,7 +351,42 @@ export default function NavigationPage() {
     }
 
     const routeUpdateId = crypto.randomUUID();
+    navigationSessionIdRef.current ??= crypto.randomUUID();
+    const sessionId = navigationSessionIdRef.current;
+    const updateType = reason === 'style_reload'
+      ? 'style_reload'
+      : routeActivationSeqRef.current === 0 ? 'initial' : 'normal';
+    const m1Details = {
+      source: 'frontend', session_id: sessionId, route_update_id: routeUpdateId,
+      update_type: updateType, target_sample_id: end.targetSampleId,
+      clock_domain: 'browser_performance',
+    };
+    const m1StartMonoMs = performance.now();
+    let m1Terminal = false;
+    const m1Started = appendResearchProvenanceEventAt({
+      event: 'm1_frontend_start', ...m1Details,
+    }, m1StartMonoMs);
+    const finishM1 = (failureReason?: string, routeActivationSeq?: number) => {
+      if (!m1Started || m1Terminal) return;
+      m1Terminal = true;
+      pendingM1Ref.current.delete(routeUpdateId);
+      const endMonoMs = performance.now();
+      if (updateType === 'normal' && !failureReason && routeActivationSeq !== undefined) {
+        appendResearchProvenanceEventAt({
+          event: 'm1_frontend_end', ...m1Details, m1_eligible: true, success: true,
+          route_activation_seq: routeActivationSeq,
+          duration_ms: Math.max(0, endMonoMs - m1StartMonoMs),
+        }, endMonoMs);
+      } else {
+        appendResearchProvenanceEventAt({
+          event: 'm1_frontend_outcome', ...m1Details, m1_eligible: false, success: false,
+          failure_reason: failureReason ?? `excluded_${updateType}`,
+        }, endMonoMs);
+      }
+    };
+    if (m1Started) pendingM1Ref.current.set(routeUpdateId, (failureReason) => finishM1(failureReason));
     const routeProvenance = Object.freeze({
+      session_id: sessionId,
       route_update_id: routeUpdateId,
       target_sample_id: end.targetSampleId,
       target_ref_lat: end.lat,
@@ -356,8 +405,17 @@ export default function NavigationPage() {
         ...routeProvenance,
         ...result,
       });
+      if (!result.success) finishM1(result.outcome);
     };
 
+    let m2AttemptId: string | null = null;
+    let m2HttpStatus: number | null = null;
+    let m2OutcomeRecorded = false;
+    const recordM2Outcome = (success: boolean, failureReason: string | null) => {
+      if (!m2AttemptId || m2OutcomeRecorded) return;
+      m2OutcomeRecorded = true;
+      finishV2M2Attempt(m2AttemptId, success, m2HttpStatus, failureReason);
+    };
     try {
       const url = `https://api.mapbox.com/directions/v5/mapbox/driving/${start.lng},${start.lat};${end.lng},${end.lat}?steps=true&geometries=geojson&overview=full&language=th&access_token=${MAPBOX_TOKEN}`;
       appendResearchProvenanceEvent({
@@ -370,8 +428,13 @@ export default function NavigationPage() {
         physical_request_id: crypto.randomUUID(),
         phase: "route_update",
       });
+      m2AttemptId = startV2M2Attempt({
+        sessionId, routeUpdateId, updateType, targetSampleId: end.targetSampleId,
+      });
       const res = await fetch(url);
+      m2HttpStatus = res.status;
       const json = await res.json();
+      recordM2Outcome(res.ok, res.ok ? null : `http_${res.status}`);
       if (!json.routes?.length) {
         endRouteUpdate({ success: false, usable_route: false, outcome: "no_usable_route" });
         return;
@@ -478,6 +541,7 @@ export default function NavigationPage() {
           ...routeProvenance,
           route_activation_seq: routeActivationSeq,
         });
+        finishM1(undefined, routeActivationSeq);
       }
       if (!routeUpdateEnded) {
         endRouteUpdate({ success: false, usable_route: false, outcome: "route_source_unavailable" });
@@ -487,6 +551,7 @@ export default function NavigationPage() {
       lastRouteFetchUserPosRef.current = { ...start };
       lastRouteFetchPatientPosRef.current = { ...end };
     } catch (err) {
+      recordM2Outcome(false, err instanceof Error ? err.name : 'unknown_error');
       endRouteUpdate({ success: false, usable_route: false, outcome: "route_error" });
       console.error("Route error:", err);
     }
@@ -657,7 +722,7 @@ export default function NavigationPage() {
     <div className="relative w-full h-[100dvh] overflow-hidden bg-black select-none font-sans">
       {/* Map */}
       <div ref={mapContainer} className="absolute inset-0 w-full h-full" />
-      <ResearchLogPanel className="absolute left-3 top-[96px] z-30" />
+      <ResearchLogPanel className="absolute left-3 top-[96px] z-30" onBeforeStop={() => closePendingM1('aborted')} />
 
       {/* ===== TOP BANNER ===== */}
       <div className="absolute top-0 left-0 right-0 z-20 px-3 pt-3">

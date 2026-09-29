@@ -27,6 +27,7 @@ export type ResearchLoggerSnapshot = {
   clockStatus: ResearchClockStatus;
   hasData: boolean;
   exported: boolean;
+  m2Incomplete: boolean;
 };
 
 const MAX_EVENTS = 100_000;
@@ -41,6 +42,7 @@ let droppedEvents = 0;
 let clockStatus: ResearchClockStatus = 'NOT_SYNCED';
 let exported = false;
 let runGeneration = 0;
+let m2Incomplete = false;
 
 let snapshot: ResearchLoggerSnapshot = createSnapshot();
 
@@ -53,6 +55,7 @@ function createSnapshot(): ResearchLoggerSnapshot {
     clockStatus,
     hasData: events.length > 0,
     exported,
+    m2Incomplete,
   };
 }
 
@@ -67,19 +70,19 @@ function publish(): void {
   });
 }
 
-function nowFields(): Pick<ResearchEvent, 'wall_clock_utc' | 'wall_clock_ms' | 'mono_ms'> {
+function nowFields(capturedMonoMs = performance.now()): Pick<ResearchEvent, 'wall_clock_utc' | 'wall_clock_ms' | 'mono_ms'> {
   const wallClockMs = Date.now();
   return {
     wall_clock_utc: new Date(wallClockMs).toISOString(),
     wall_clock_ms: wallClockMs,
-    mono_ms: performance.now(),
+    mono_ms: capturedMonoMs,
   };
 }
 
 function appendForRun(
   input: ResearchEventInput,
   expectedRunId: string,
-  options: { allowStopped?: boolean; control?: boolean } = {},
+  options: { allowStopped?: boolean; control?: boolean; capturedMonoMs?: number } = {},
 ): boolean {
   const acceptsState = status === 'RECORDING' || (options.allowStopped === true && status === 'STOPPED' && !exported);
   if (!acceptsState || researchRunId !== expectedRunId) return false;
@@ -99,7 +102,7 @@ function appendForRun(
     event_seq: eventSeq,
     research_run_id: expectedRunId,
     system_version: 'V2',
-    ...nowFields(),
+    ...nowFields(options.capturedMonoMs),
   }));
   publish();
   return true;
@@ -127,6 +130,7 @@ export function startResearchRun(requestedRunId: string): string | null {
   droppedEvents = 0;
   clockStatus = 'NOT_SYNCED';
   exported = false;
+  m2Incomplete = false;
   status = 'RECORDING';
   runGeneration += 1;
   const generation = runGeneration;
@@ -153,6 +157,7 @@ export function clearResearchRun(): void {
   droppedEvents = 0;
   clockStatus = 'NOT_SYNCED';
   exported = false;
+  m2Incomplete = false;
   publish();
 }
 
@@ -161,8 +166,20 @@ export function appendResearchProvenanceEvent(input: ResearchEventInput): boolea
   return appendForRun(input, researchRunId);
 }
 
+export function appendResearchProvenanceEventAt(input: ResearchEventInput, capturedMonoMs: number): boolean {
+  if (status !== 'RECORDING' || !researchRunId) return false;
+  return appendForRun(input, researchRunId, { capturedMonoMs });
+}
+
 export function getRecordingResearchRunId(): string | null {
   return status === 'RECORDING' ? researchRunId : null;
+}
+
+export function markM2Incomplete(reason: string): void {
+  if (status !== 'RECORDING' || !researchRunId) return;
+  m2Incomplete = true;
+  appendForRun({ event: 'm2_integrity_error', reason }, researchRunId, { control: true });
+  publish();
 }
 
 export function getResearchProvenanceEvents(): readonly ResearchEvent[] {
@@ -188,6 +205,7 @@ export function exportResearchLog(): void {
     ...nowFields(),
     total_events: events.length,
     dropped_events: droppedEvents,
+    m2_complete: !m2Incomplete && droppedEvents === 0,
   };
   const jsonl = `${[...events, health].map((event) => JSON.stringify(event)).join('\n')}\n`;
   const url = URL.createObjectURL(new Blob([jsonl], { type: 'application/x-ndjson' }));

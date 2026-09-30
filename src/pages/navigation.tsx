@@ -74,6 +74,7 @@ const getManeuverIcon = (type: string, modifier: string) => {
 export default function NavigationPage() {
   const router = useRouter();
   const mapContainer = useRef<HTMLDivElement>(null);
+  const topBannerRef = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
 
   // UI State
@@ -722,10 +723,10 @@ export default function NavigationPage() {
     <div className="relative w-full h-[100dvh] overflow-hidden bg-black select-none font-sans">
       {/* Map */}
       <div ref={mapContainer} className="absolute inset-0 w-full h-full" />
-      <ResearchLogPanel className="absolute left-3 top-[96px] z-30" onBeforeStop={() => closePendingM1('aborted')} />
+      <ResearchLogPanel bannerRef={topBannerRef} collapsedZIndex={30} expandedZIndex={60} onBeforeStop={() => closePendingM1('aborted')} />
 
       {/* ===== TOP BANNER ===== */}
-      <div className="absolute top-0 left-0 right-0 z-20 px-3 pt-3">
+      <div ref={topBannerRef} className="absolute top-0 left-0 right-0 z-20 px-3 pt-3">
         <div className="bg-[#0F5338] rounded-2xl shadow-2xl px-4 py-3 flex items-center gap-3 min-h-[72px]">
           {/* ไอคอน + ระยะทาง */}
           <div className="shrink-0 flex flex-col items-center gap-1 w-14">

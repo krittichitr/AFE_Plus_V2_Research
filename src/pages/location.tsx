@@ -8,6 +8,7 @@ import { useGoogleMaps } from '@/providers/GoogleMapsProvider';
 import Spinner from 'react-bootstrap/Spinner';
 import { encrypt } from '@/utils/helpers'
 import MapLayerControl from '@/components/MapLayerControl'
+import { m2ResearchQuerySuffix } from '@/lib/research/navigationResearchQuery';
 
 // --- Constants & Icons ---
 const CONTAINER_STYLE = { width: '100vw', height: '100vh' };
@@ -502,7 +503,7 @@ const Location = () => {
                         <div className="space-y-3">
                             {/* 1. In-App Navigation (Demo Style) */}
                             <Link
-                                href={`/navigation?idlocation=${router.query.idlocation || ''}&users_id=${dataUser.userData?.users_id || ''}&takecare_id=${dataUser.takecareData?.takecare_id || ''}&auToken=${router.query.auToken || ''}`}
+                                href={`/navigation?idlocation=${router.query.idlocation || ''}&users_id=${dataUser.userData?.users_id || ''}&takecare_id=${dataUser.takecareData?.takecare_id || ''}&auToken=${router.query.auToken || ''}${m2ResearchQuerySuffix(router.query.m2_research)}`}
                                 aria-disabled={isResearchStartDisabled}
                                 onClick={(event) => {
                                     if (isResearchStartDisabled) event.preventDefault();
